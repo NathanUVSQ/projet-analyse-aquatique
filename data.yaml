@@ -1,0 +1,8 @@
+path: dataset        # chemin vers ton dossier dataset
+train: train         # sous-dossier d'entraînement
+val: val             # sous-dossier de validation
+
+nc: 2                # nombre de classes (change selon toi)
+names:               # liste de tes classes dans l'ordre
+  - algue
+  - autre

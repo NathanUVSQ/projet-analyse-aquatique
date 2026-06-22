@@ -13,21 +13,23 @@ global cap
 global numero_camera
 global record_yes
 record_yes = False
-recordings = {}         # id -> liste de frames (crops) en cours d'enregistrement
-recording_done = set()  # ids dont la vidéo a déjà été sauvegardée
+global type_record
+type_record = "video"    # "video" ou "photo"
+
+recordings = {}
+recording_done = set()
+photo_done = set()      # 1 seule photo par ID
 
 start = False
 previous_gray = None
 
-tracked_objects = {}    # id -> {"x","y","w","h","area","type","lost"}
+tracked_objects = {}
 next_id = 0
 
 MAX_DIST = 50
 
-# Estimation du FPS réel de la boucle (sert de référence pour convertir des secondes en frames)
 FPS_ESTIMATE = 15
 
-# Temps pendant lequel la zone reste affichée sur un objet immobile avant d'arrêter de le suivre
 IMMOBILE_TIMEOUT_SEC = 5
 IMMOBILE_TIMEOUT_FRAMES = FPS_ESTIMATE * IMMOBILE_TIMEOUT_SEC
 
@@ -40,9 +42,9 @@ os.makedirs(RECORD_DIR, exist_ok=True)
 print(f"[INFO] Les vidéos seront enregistrées dans : {RECORD_DIR}")
 
 RECORD_FPS = FPS_ESTIMATE
-RECORD_SIZE = (200, 200)              # taille fixe imposée à chaque frame de la vidéo
-MAX_RECORD_FRAMES = FPS_ESTIMATE * 3  # ~3 sec de vidéo
-VIDEO_ZOOM_FACTOR = 2                 # zone 2x plus grande, uniquement pour la vidéo
+RECORD_SIZE = (200, 200)
+MAX_RECORD_FRAMES = FPS_ESTIMATE * 3
+VIDEO_ZOOM_FACTOR = 2
 
 # ----------------------------
 # Initialisation caméra
@@ -117,10 +119,6 @@ def update_frame():
 
             seen_this_frame = set()
 
-            # ----------------------------
-            # MATCHING DES CONTOURS DÉTECTÉS CE FRAME
-            # ----------------------------
-
             for contour in contours:
 
                 area = cv2.contourArea(contour)
@@ -147,7 +145,6 @@ def update_frame():
                 cx = x + w // 2
                 cy = y + h // 2
 
-                # Recherche du tracked_object le plus proche
                 best_id = None
                 best_dist = 999999
 
@@ -158,7 +155,6 @@ def update_frame():
                         best_id = tid
 
                 if best_id is not None and best_dist < MAX_DIST:
-
                     obj_id = best_id
                     obj = tracked_objects[obj_id]
                     obj["x"] = cx
@@ -167,10 +163,8 @@ def update_frame():
                     obj["h"] = h
                     obj["area"] = area
                     obj["type"] = type_objet
-                    obj["lost"] = 0   # il vient de bouger -> on relance le compteur d'immobilité
-
+                    obj["lost"] = 0
                 else:
-
                     obj_id = next_id
                     tracked_objects[obj_id] = {
                         "x": cx, "y": cy,
@@ -182,23 +176,12 @@ def update_frame():
 
                 seen_this_frame.add(obj_id)
 
-            # ----------------------------
-            # GESTION DES OBJETS NON RETROUVÉS CE FRAME (IMMOBILES)
-            # ----------------------------
-
             for obj_id in list(tracked_objects.keys()):
-
                 if obj_id not in seen_this_frame:
                     tracked_objects[obj_id]["lost"] += 1
-
                 if tracked_objects[obj_id]["lost"] > IMMOBILE_TIMEOUT_FRAMES:
                     del tracked_objects[obj_id]
                     recordings.pop(obj_id, None)
-
-            # ----------------------------
-            # AFFICHAGE + ENREGISTREMENT VIDÉO POUR TOUS LES OBJETS SUIVIS
-            # (y compris ceux actuellement immobiles, dont la zone reste figée)
-            # ----------------------------
 
             for obj_id, obj in tracked_objects.items():
 
@@ -218,43 +201,73 @@ def update_frame():
                     1
                 )
 
-                # 🎥 Enregistrement vidéo (zone 2x plus grande, uniquement pour la vidéo)
-                if obj_id not in recording_done:
+                # 🎥 MODE VIDÉO
+                if type_record == "video":
 
-                    new_w = int(obj["w"] * VIDEO_ZOOM_FACTOR)
-                    new_h = int(obj["h"] * VIDEO_ZOOM_FACTOR)
+                    if obj_id not in recording_done:
 
-                    vx0 = max(0, obj["x"] - new_w // 2)
-                    vy0 = max(0, obj["y"] - new_h // 2)
-                    vx1 = min(fw, obj["x"] + new_w // 2)
-                    vy1 = min(fh, obj["y"] + new_h // 2)
+                        new_w = int(obj["w"] * VIDEO_ZOOM_FACTOR)
+                        new_h = int(obj["h"] * VIDEO_ZOOM_FACTOR)
 
-                    if vx1 > vx0 and vy1 > vy0:
+                        vx0 = max(0, obj["x"] - new_w // 2)
+                        vy0 = max(0, obj["y"] - new_h // 2)
+                        vx1 = min(fw, obj["x"] + new_w // 2)
+                        vy1 = min(fh, obj["y"] + new_h // 2)
 
-                        crop = frame[vy0:vy1, vx0:vx1]
-                        crop_resized = cv2.resize(crop, RECORD_SIZE)
+                        if vx1 > vx0 and vy1 > vy0:
 
-                        recordings.setdefault(obj_id, []).append(crop_resized)
+                            crop = frame[vy0:vy1, vx0:vx1]
+                            crop_resized = cv2.resize(crop, RECORD_SIZE)
 
-                        if len(recordings[obj_id]) >= MAX_RECORD_FRAMES and record_yes:
+                            recordings.setdefault(obj_id, []).append(crop_resized)
+
+                            if len(recordings[obj_id]) >= MAX_RECORD_FRAMES and record_yes:
+
+                                filename = os.path.join(
+                                    RECORD_DIR,
+                                    f"obj_{obj_id}_{int(time.time()*1000)}.mp4"
+                                )
+
+                                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                                writer = cv2.VideoWriter(filename, fourcc, RECORD_FPS, RECORD_SIZE)
+
+                                for f in recordings[obj_id]:
+                                    writer.write(f)
+
+                                writer.release()
+
+                                print(f"[OK] Vidéo enregistrée : {filename}")
+
+                                recording_done.add(obj_id)
+                                del recordings[obj_id]
+
+                # 📸 MODE PHOTO
+                elif type_record == "photo":
+
+                    if record_yes and obj_id not in photo_done:
+
+                        fh2, fw2 = frame.shape[:2]
+                        x0 = max(0, x)
+                        y0 = max(0, y)
+                        x1 = min(fw2, x + w)
+                        y1 = min(fh2, y + h)
+
+                        if x1 > x0 and y1 > y0:
+
+                            crop = frame[y0:y1, x0:x1]
 
                             filename = os.path.join(
                                 RECORD_DIR,
-                                f"obj_{obj_id}_{int(time.time()*1000)}.mp4"
+                                f"obj_{obj_id}_{int(time.time()*1000)}.png"
                             )
 
-                            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                            writer = cv2.VideoWriter(filename, fourcc, RECORD_FPS, RECORD_SIZE)
+                            ok = cv2.imwrite(filename, crop)
 
-                            for f in recordings[obj_id]:
-                                writer.write(f)
-
-                            writer.release()
-
-                            print(f"[OK] Vidéo enregistrée : {filename}")
-
-                            recording_done.add(obj_id)
-                            del recordings[obj_id]
+                            if ok:
+                                print(f"[OK] Photo enregistrée : {filename}")
+                                photo_done.add(obj_id)
+                            else:
+                                print(f"[ERREUR] Échec photo pour ID {obj_id}")
 
             compteur_label.config(
                 text=f"Objets mobiles détectés : {len(tracked_objects)}"
@@ -297,12 +310,9 @@ btn_start = tk.Button(
 )
 btn_start.pack(pady=10)
 
-
-
 # ----------------------------
 # record boutton
 # ----------------------------
-
 
 def record_YN():
 
@@ -322,28 +332,52 @@ btn_record = tk.Button(
     font=("Arial", 14)
 )
 btn_record.pack(pady=5)
+
 # ----------------------------
 # Paramètre
 # ----------------------------
+
 def save():
     global numero_camera
     global cap
     cap.release()
-    cap = cv2.VideoCapture( int(numero_camera.get())) 
+    cap = cv2.VideoCapture(int(numero_camera.get()))
+
+
+def type_enregistrement():
+    global type_record
+    global type_b
+    if type_record == "video":
+        type_record = "photo"
+        type_b.config(text="type d'enregistrement: Photo")
+    else:
+        type_record = "video"
+        type_b.config(text="type d'enregistrement: Vidéo")
+
+
 
 def parametre():
     global numero_camera
+    global type_b
     fenetre_para = tk.Toplevel(root)
     fenetre_para.title("parametres")
     fenetre_para.geometry("300x200")
-    
-    # bouton dans la 2e fenêtre
+
+
+    type_b = tk.Button(
+        fenetre_para,
+        text="type d'enregistrement: Vidéo",
+        command=type_enregistrement
+    )
+    type_b.pack(side="bottom")
+
+
     btn2 = tk.Button(
         fenetre_para,
         text="appliquer",
         command=save
     )
-    btn2.pack(side = "bottom")
+    btn2.pack(side="bottom")
 
     fenetre_entry = tk.Entry(
         fenetre_para,
@@ -352,9 +386,9 @@ def parametre():
     )
     fenetre_entry.pack(pady=10)
 
-    label_camera = tk.Label(fenetre_para, text = "Numéro de la Caméra")
-    label_camera.pack(pady = 10, side = "left")
-    
+    label_camera = tk.Label(fenetre_para, text="Numéro de la Caméra")
+    label_camera.pack(pady=10, side="left")
+
 btn_para = tk.Button(
     root,
     text="paramètres",
@@ -362,7 +396,6 @@ btn_para = tk.Button(
     font=("Arial", 14)
 )
 btn_para.pack(pady=10)
-
 
 # ----------------------------
 # Fermeture propre
