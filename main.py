@@ -5,11 +5,27 @@ import numpy as np
 import math
 import os
 import time
+from openpyxl import Workbook
 
+from ultralytics import YOLO
+
+model_cls = YOLO(
+    "runs/classify/microorganismes_v1/weights/best.pt"
+)
+
+wb = Workbook() #Création classeur
+liste_obj = []
+liste_id_excel = set()
 # ----------------------------
 # Variables globales
 # ----------------------------
+DETECT_ONLY_MOVING = False   # True = disparaît dès que l'objet s'immobilise
+                            # False = reste affiché pendant IMMOBILE_TIMEOUT_SEC
 global cap
+global MULTIPLE_PHOTOS_INTERVAL
+MULTIPLE_PHOTOS_INTERVAL = 3
+global MULTIPLE_PHOTOS
+MULTIPLE_PHOTOS = False
 global numero_camera
 global record_yes
 record_yes = False
@@ -44,7 +60,7 @@ print(f"[INFO] Les vidéos seront enregistrées dans : {RECORD_DIR}")
 RECORD_FPS = FPS_ESTIMATE
 RECORD_SIZE = (200, 200)
 MAX_RECORD_FRAMES = FPS_ESTIMATE * 3
-VIDEO_ZOOM_FACTOR = 2
+VIDEO_ZOOM_FACTOR = 4
 
 # ----------------------------
 # Initialisation caméra
@@ -132,18 +148,22 @@ def update_frame():
                 if area < 500:
                     continue
 
-                if area < 200:
-                    type_objet = "Petit"
-                elif circularity > 0.8:
-                    type_objet = "Rond"
-                elif area > 15000:
-                    type_objet = "Grand"
-                else:
-                    type_objet = "Non definit ???"
+                #if area < 200:
+                    #type_objet = "Petit"
+                #elif circularity > 0.8:
+                    #type_objet = "Rond"
+                #elif area > 15000:
+                    #type_objet = "Grand"
+                #else:
+                    #type_objet = "Non definit ???"
 
                 x, y, w, h = cv2.boundingRect(contour)
                 cx = x + w // 2
                 cy = y + h // 2
+
+
+
+
 
                 best_id = None
                 best_dist = 999999
@@ -162,26 +182,43 @@ def update_frame():
                     obj["w"] = w
                     obj["h"] = h
                     obj["area"] = area
-                    obj["type"] = type_objet
+                    #obj["type"] = type_objet
                     obj["lost"] = 0
+                    
                 else:
                     obj_id = next_id
+                    crop = frame[y:y+h, x:x+w]
+
+                    results = model_cls.predict(
+                        crop,
+                        verbose=False
+                    )
+
+                    class_id = results[0].probs.top1
+                    type_objet = results[0].names[class_id]
+
                     tracked_objects[obj_id] = {
                         "x": cx, "y": cy,
                         "w": w, "h": h,
-                        "area": area, "type": type_objet,
-                        "lost": 0
+                        "area": area,
+                        "type": type_objet,
+                        "lost": 0,
+                        "cote_video": int(max(w, h) * VIDEO_ZOOM_FACTOR)  # fixé une fois pour toujours
                     }
+
                     next_id += 1
 
                 seen_this_frame.add(obj_id)
 
-            for obj_id in list(tracked_objects.keys()):
-                if obj_id not in seen_this_frame:
-                    tracked_objects[obj_id]["lost"] += 1
-                if tracked_objects[obj_id]["lost"] > IMMOBILE_TIMEOUT_FRAMES:
-                    del tracked_objects[obj_id]
-                    recordings.pop(obj_id, None)
+                for obj_id in list(tracked_objects.keys()): #Changement dU mode DYNAMIQUE
+                    if obj_id not in seen_this_frame:
+                        tracked_objects[obj_id]["lost"] += 1
+
+                    timeout = 1 if DETECT_ONLY_MOVING else IMMOBILE_TIMEOUT_FRAMES
+
+                    if tracked_objects[obj_id]["lost"] > timeout:
+                        del tracked_objects[obj_id]
+                        recordings.pop(obj_id, None)
 
             for obj_id, obj in tracked_objects.items():
 
@@ -201,18 +238,21 @@ def update_frame():
                     1
                 )
 
+                if obj_id not in liste_id_excel: #AJOUT AU TABLEAU EXCEL
+                    liste_obj.append(obj['type']) #Création liste obj
+                    print(liste_obj)
+                    liste_id_excel.add(obj_id)
+
                 # 🎥 MODE VIDÉO
                 if type_record == "video":
-
+        
                     if obj_id not in recording_done:
 
-                        new_w = int(obj["w"] * VIDEO_ZOOM_FACTOR)
-                        new_h = int(obj["h"] * VIDEO_ZOOM_FACTOR)
-
-                        vx0 = max(0, obj["x"] - new_w // 2)
-                        vy0 = max(0, obj["y"] - new_h // 2)
-                        vx1 = min(fw, obj["x"] + new_w // 2)
-                        vy1 = min(fh, obj["y"] + new_h // 2)
+                        cote = obj["cote_video"]
+                        vx0 = max(0, obj["x"] - cote // 2)
+                        vy0 = max(0, obj["y"] - cote // 2)
+                        vx1 = min(fw, obj["x"] + cote // 2)
+                        vy1 = min(fh, obj["y"] + cote // 2)
 
                         if vx1 > vx0 and vy1 > vy0:
 
@@ -244,7 +284,7 @@ def update_frame():
                 # 📸 MODE PHOTO
                 elif type_record == "photo":
 
-                    if record_yes and obj_id not in photo_done:
+                    if record_yes:
 
                         fh2, fw2 = frame.shape[:2]
                         x0 = max(0, x)
@@ -254,20 +294,35 @@ def update_frame():
 
                         if x1 > x0 and y1 > y0:
 
-                            crop = frame[y0:y1, x0:x1]
+                            now = time.time()
 
-                            filename = os.path.join(
-                                RECORD_DIR,
-                                f"obj_{obj_id}_{int(time.time()*1000)}.png"
-                            )
+                            # Vérifie si on peut prendre une photo pour cet objet
+                            last_photo_time = obj.get("last_photo", 0)
 
-                            ok = cv2.imwrite(filename, crop)
-
-                            if ok:
-                                print(f"[OK] Photo enregistrée : {filename}")
-                                photo_done.add(obj_id)
+                            if MULTIPLE_PHOTOS:
+                                # On prend une photo toutes les X secondes
+                                peut_prendre = (now - last_photo_time) >= MULTIPLE_PHOTOS_INTERVAL
                             else:
-                                print(f"[ERREUR] Échec photo pour ID {obj_id}")
+                                # Comportement actuel : 1 seule photo par ID
+                                peut_prendre = obj_id not in photo_done
+
+                            if peut_prendre:
+
+                                crop = frame[y0:y1, x0:x1]
+
+                                filename = os.path.join(
+                                    RECORD_DIR,
+                                    f"obj_{obj_id}_{obj['type']}_{int(now*1000)}.png"
+                                )
+
+                                ok = cv2.imwrite(filename, crop)
+
+                                if ok:
+                                    print(f"[OK] Photo enregistrée : {filename}")
+                                    obj["last_photo"] = now      # mémorise l'heure de la dernière photo
+                                    photo_done.add(obj_id)
+                                else:
+                                    print(f"[ERREUR] Échec photo pour ID {obj_id}")
 
             compteur_label.config(
                 text=f"Objets mobiles détectés : {len(tracked_objects)}"
@@ -347,6 +402,7 @@ def save():
 def type_enregistrement():
     global type_record
     global type_b
+    
     if type_record == "video":
         type_record = "photo"
         type_b.config(text="type d'enregistrement: Photo")
@@ -354,14 +410,71 @@ def type_enregistrement():
         type_record = "video"
         type_b.config(text="type d'enregistrement: Vidéo")
 
+def moving():
+    global DETECT_ONLY_MOVING
+    global type_m
+    if DETECT_ONLY_MOVING :
+        DETECT_ONLY_MOVING = False
+        type_m.config(text="type de detection: Moving & Stop")
+        print(DETECT_ONLY_MOVING)
+    else:
+        DETECT_ONLY_MOVING = True
+        type_m.config(text="type de detection: Only Moving")
+        print(DETECT_ONLY_MOVING)
+
+def multiple():
+    global MULTIPLE_PHOTOS
+    global type_mp
+    if MULTIPLE_PHOTOS :
+        MULTIPLE_PHOTOS = False
+        type_mp.config(text="Single photo")
+        print(MULTIPLE_PHOTOS)
+    else:
+        MULTIPLE_PHOTOS = True
+        type_mp.config(text="multiple photos")
+        print(MULTIPLE_PHOTOS)
 
 
+    
 def parametre():
     global numero_camera
+    global MULTIPLE_PHOTOS
     global type_b
+    global type_m
+    global type_mp
+    global DETECT_ONLY_MOVING
     fenetre_para = tk.Toplevel(root)
     fenetre_para.title("parametres")
     fenetre_para.geometry("300x200")
+
+    if DETECT_ONLY_MOVING:
+        DETECT_ONLY_MOVING_TEXT = "type de detection: Only Moving"
+    else:
+        DETECT_ONLY_MOVING_TEXT = "type de detection: Moving & Stop"
+
+    if MULTIPLE_PHOTOS:
+        MULTIPLE_PHOTOS_TEXT = "Single photo"
+    else:
+        MULTIPLE_PHOTOS_TEXT = "multiple photos"
+
+
+    print(DETECT_ONLY_MOVING)
+
+
+
+    type_m = tk.Button(
+        fenetre_para,
+        text= DETECT_ONLY_MOVING_TEXT,
+        command=moving
+    )
+    type_m.pack(side="bottom")
+
+    type_mp = tk.Button(
+        fenetre_para,
+        text=MULTIPLE_PHOTOS_TEXT,
+        command=multiple
+    )
+    type_mp.pack(side="bottom")
 
 
     type_b = tk.Button(
@@ -388,6 +501,7 @@ def parametre():
 
     label_camera = tk.Label(fenetre_para, text="Numéro de la Caméra")
     label_camera.pack(pady=10, side="left")
+
 
 btn_para = tk.Button(
     root,
