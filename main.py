@@ -4,9 +4,10 @@ import cv2
 import numpy as np
 import math
 import os
-import time
+from datetime import date
 from openpyxl import Workbook
-
+from datetime import datetime
+import time
 from ultralytics import YOLO
 
 model_cls = YOLO(
@@ -49,13 +50,15 @@ FPS_ESTIMATE = 15
 IMMOBILE_TIMEOUT_SEC = 5
 IMMOBILE_TIMEOUT_FRAMES = FPS_ESTIMATE * IMMOBILE_TIMEOUT_SEC
 
+
+global record_dir
+record_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures/")
+os.makedirs(record_dir, exist_ok=True)
+
 # ----------------------------
 # AJOUT MINIMAL VIDÉOS
 # ----------------------------
 
-RECORD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
-os.makedirs(RECORD_DIR, exist_ok=True)
-print(f"[INFO] Les vidéos seront enregistrées dans : {RECORD_DIR}")
 
 RECORD_FPS = FPS_ESTIMATE
 RECORD_SIZE = (200, 200)
@@ -264,7 +267,7 @@ def update_frame():
                             if len(recordings[obj_id]) >= MAX_RECORD_FRAMES and record_yes:
 
                                 filename = os.path.join(
-                                    RECORD_DIR,
+                                    record_dir,
                                     f"obj_{obj_id}_{int(time.time()*1000)}.mp4"
                                 )
 
@@ -311,7 +314,7 @@ def update_frame():
                                 crop = frame[y0:y1, x0:x1]
 
                                 filename = os.path.join(
-                                    RECORD_DIR,
+                                    record_dir,
                                     f"obj_{obj_id}_{obj['type']}_{int(now*1000)}.png"
                                 )
 
@@ -369,6 +372,13 @@ btn_start.pack(pady=10)
 # record boutton
 # ----------------------------
 
+def folder_name_function(folder_name_num):
+    folder_name = str(date.today()) + "_" + str(int(folder_name_num))
+    if os.path.isdir("captures/" + folder_name):
+        return folder_name_function(int(folder_name_num)+1)
+    else:
+        return folder_name
+            
 def record_YN():
 
     global record_yes
@@ -379,6 +389,15 @@ def record_YN():
     else:
         record_yes = True
         terminal_label.config(text="Recording...")
+
+        record_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ("captures/" + folder_name_function(0)))
+        os.makedirs(record_dir, exist_ok=True)
+        print(f"[INFO] Les vidéos seront enregistrées dans : {record_dir}")
+
+
+
+
+
 
 btn_record = tk.Button(
     root,
@@ -500,6 +519,67 @@ def parametre():
     fenetre_entry.pack(pady=10)
 
     label_camera = tk.Label(fenetre_para, text="Numéro de la Caméra")
+    label_camera.pack(pady=10, side="left")
+
+
+btn_para = tk.Button(
+    root,
+    text="paramètres",
+    command=parametre,
+    font=("Arial", 14)
+)
+btn_para.pack(pady=10)
+
+
+#######################
+#FENETRE ANALYSES######
+#######################
+
+def analyse_window():
+    #global 
+    fenetre_analyse = tk.Toplevel(root)
+    fenetre_analyse.title("Analyse")
+    fenetre_analyse.geometry("300x200")
+
+
+    type_m = tk.Button(
+        fenetre_analyse,
+        text= DETECT_ONLY_MOVING_TEXT,
+        command=moving
+    )
+    type_m.pack(side="bottom")
+
+    type_mp = tk.Button(
+        fenetre_analyse,
+        text=MULTIPLE_PHOTOS_TEXT,
+        command=multiple
+    )
+    type_mp.pack(side="bottom")
+
+
+    type_b = tk.Button(
+        fenetre_analyse,
+        text="type d'enregistrement: Vidéo",
+        command=type_enregistrement
+    )
+    type_b.pack(side="bottom")
+
+
+    btn2 = tk.Button(
+        fenetre_analyse,
+        text="appliquer",
+        command=save
+    )
+    btn2.pack(side="bottom")
+
+    fenetre_entry = tk.Entry(
+        fenetre_analyse,
+        textvariable=numero_camera,
+        width=10
+    )
+    fenetre_entry.pack(pady=10)
+
+    label_camera = tk.Label(fenetre_analyse, text="Numéro de la Caméra")
     label_camera.pack(pady=10, side="left")
 
 
