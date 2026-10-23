@@ -9,6 +9,7 @@ from openpyxl import Workbook
 from datetime import datetime
 import time
 from ultralytics import YOLO
+from threading import Timer
 
 model_cls = YOLO(
     "runs/classify/microorganismes_v1/weights/best.pt"
@@ -28,11 +29,14 @@ MULTIPLE_PHOTOS_INTERVAL = 3
 global MULTIPLE_PHOTOS
 MULTIPLE_PHOTOS = False
 global numero_camera
+global set_timer
 global record_yes
 record_yes = False
 global type_record
 type_record = "video"    # "video" ou "photo"
 
+global terminal_history
+terminal_history = ""
 
 recordings = {}
 recording_done = set()
@@ -63,10 +67,9 @@ os.makedirs(record_dir, exist_ok=True)
 ids_ecrits = set()   # IDs déjà écrits pour l'enregistrement en cours
 
 def ecrire_objet(obj_id, type_objet):
-    chemin_texte = os.path.join(record_dir, "log.txt")
+    chemin_texte = os.path.join(record_dir, "raw.txt")
     with open(chemin_texte, "a", encoding="utf-8") as f:
         f.write(f"ID:{obj_id} {type_objet}\n")
-
 
 
 
@@ -95,6 +98,7 @@ root = tk.Tk()
 root.title("Analyse Microscope")
 root.geometry("1000x700")
 numero_camera = tk.StringVar(value="0")
+set_timer = tk.StringVar(value="0")
 video_label = tk.Label(root)
 video_label.pack()
 
@@ -111,6 +115,28 @@ terminal_label = tk.Label(
     font=("Lucida Console", 10)
 )
 terminal_label.pack(side="left")
+
+
+# ----------------------------
+#  TERMINAL
+# ----------------------------
+
+def terminal(message):
+    global terminal_history
+    global record_yes
+    message = str(message)
+    text_path = os.path.join(record_dir, "log.txt")
+
+    if record_yes:
+        with open(text_path, "a", encoding="utf-8") as fichier:
+            fichier.write(str(datetime.now().replace(microsecond=0)))
+            fichier.write(" - ")
+            fichier.write(message)
+            fichier.write("\n")
+        
+    terminal_history = terminal_history + "\n" + str(datetime.now().replace(microsecond=0)) + ": " +  message
+    terminal_label.config(text= terminal_history)
+
 
 # ----------------------------
 # Fonction vidéo
@@ -305,6 +331,8 @@ def update_frame():
                                 writer.release()
 
                                 print(f"[OK] Vidéo enregistrée : {filename}")
+                                message = f"[OK] Vidéo enregistrée : {filename}"
+                                #terminal(message)
 
                                 recording_done.add(obj_id)
                                 del recordings[obj_id]
@@ -372,7 +400,7 @@ def update_frame():
 # ----------------------------
 
 def commencer():
-
+    
     global start
     global previous_gray
 
@@ -380,10 +408,12 @@ def commencer():
         start = False
         previous_gray = None
         cv2.destroyAllWindows()
-        terminal_label.config(text="Live is stopped")
+        terminal("Live is stopped")
+        #terminal_label.config(text="Live is stopped")
     else:
         start = True
-        terminal_label.config(text="Live is launched")
+        terminal("Live is launched")
+        #terminal_label.config(text="Live is launched")
 
 btn_start = tk.Button(
     root,
@@ -396,6 +426,11 @@ btn_start.pack(pady=10)
 # ----------------------------
 # record boutton
 # ----------------------------
+def timer_instruction():
+    print("fin timer")
+    global record_yes
+    record_yes = True
+    record_YN()
 
 def folder_name_function(folder_name_num):
     base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
@@ -408,23 +443,39 @@ def folder_name_function(folder_name_num):
 def record_YN():
     global record_yes
     global record_dir
+    global set_timer
 
     if record_yes:
         record_yes = False
-        terminal_label.config(text="Stop recording !")
+        #terminal_label.config(text="Stop recording !")
+        terminal("Stop recording !")
     else:
+        #TIMER----------------#
+        if int(set_timer.get()) >= 1:
+            timer = Timer(60*int(set_timer.get()), timer_instruction) #Timer en MINUTE
+            timer.start()
+
+
+            print("!!!!", set_timer.get())
+
+
+            message = str(datetime.now())+": fin de l'enregistrement dans "+ str(set_timer.get()) + " minutes"
+            print(message)
+            terminal(message)
+        #---------------------#
         base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captures")
         record_dir = os.path.join(base, folder_name_function(0))
         os.makedirs(record_dir, exist_ok=True)
         ids_ecrits.clear()
 
         # Séparateur de session (les ID repartent de 0 à chaque lancement)
-        text_path = os.path.join(record_dir, "log.txt")
+        text_path = os.path.join(record_dir, "raw.txt")
         with open(text_path, "a", encoding="utf-8") as f:
             f.write(f"\n--- Session du {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
 
         record_yes = True
-        terminal_label.config(text="Recording...")
+        #terminal_label.config(text="Recording...")
+        terminal("Recording...")
         print(f"[INFO] Les enregistrements seront sauvegardés dans : {record_dir}")
 
 
@@ -487,6 +538,7 @@ def multiple():
     
 def parametre():
     global numero_camera
+    global set_timer
     global MULTIPLE_PHOTOS
     global type_b
     global type_m
@@ -541,12 +593,21 @@ def parametre():
     )
     btn2.pack(side="bottom")
 
-    fenetre_entry = tk.Entry(
+    fenetre_entry = tk.Entry( #NUMERO CAMERA
         fenetre_para,
         textvariable=numero_camera,
         width=10
     )
+    
     fenetre_entry.pack(pady=10)
+
+#TIMER
+    fenetre_entry_time = tk.Entry( 
+        fenetre_para,
+        textvariable=set_timer,
+        width=10
+    )
+    fenetre_entry_time.pack(pady=20)
 
     label_camera = tk.Label(fenetre_para, text="Numéro de la Caméra")
     label_camera.pack(pady=10, side="left")
@@ -620,6 +681,10 @@ btn_para = tk.Button(
     font=("Arial", 14)
 )
 btn_para.pack(pady=10)
+
+
+
+
 
 # ----------------------------
 # Fermeture propre
